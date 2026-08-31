@@ -1,0 +1,12 @@
+# Terraform provider cache and local state
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Terraform variable files may contain local environment values
+*.tfvars
+*.tfvars.json
+
+# Service-account credentials
+**/*-key.json
