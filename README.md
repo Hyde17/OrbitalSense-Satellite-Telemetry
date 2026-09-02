@@ -36,13 +36,13 @@ Telemetry Consumer
       |       |
       |       v
       |   BigQuery
-      |   analytics_dev.events
+      |   analytics_dev.telemetry
       |
       +--> Invalid events
               |
               v
           Dead-letter topic
-          events-dev-dlq
+          events-dead-letter-dev
 ```
 
 ## Project Structure
@@ -54,10 +54,12 @@ app/
 ├── consumer/
 │   ├── pipeline.py
 │   └── validation.py
-├── README.md
 ├── setup.py
 └── ...
 ```
+
+Run Python commands from the `app/` directory unless a command shows a
+different working directory.
 
 ## Environment Variables
 
@@ -70,9 +72,14 @@ The producer and consumer use environment variables for Google Cloud and Pub/Sub
 | `PROJECT_ID`         | Google Cloud project ID                                       | `orbitalsense-2026`                                                |
 | `PUBSUB_TOPIC`       | Pub/Sub topic used by the producer                            | `events-dev`                                                       |
 | `INPUT_SUBSCRIPTION` | Fully-qualified Pub/Sub subscription consumed by the pipeline | `projects/orbitalsense-2026/subscriptions/events-dev-subscription` |
-| `DLQ_TOPIC`          | Fully-qualified Pub/Sub dead-letter topic                     | `projects/orbitalsense-2026/topics/events-dev-dlq`                 |
-| `BIGQUERY_TABLE`     | Destination table for validated/curated events                | `orbitalsense-2026:analytics_dev.events`                           |
+| `DLQ_TOPIC`          | Fully-qualified Pub/Sub dead-letter topic                     | `projects/orbitalsense-2026/topics/events-dead-letter-dev`          |
+| `BIGQUERY_TABLE`     | Destination table for validated/curated events                | `orbitalsense-2026:analytics_dev.telemetry`                        |
 | `RAW_BIGQUERY_TABLE` | Destination table for raw Pub/Sub messages                    | `orbitalsense-2026:analytics_dev.telemetry_raw`                    |
+| `REGION`             | Google Cloud region for Dataflow and BigQuery                  | `europe-west2`                                                       |
+| `TEMP_LOCATION`      | GCS location for temporary Dataflow files                     | `gs://BUCKET/temp`                                                   |
+| `STAGING_LOCATION`   | GCS location for staged Dataflow files                        | `gs://BUCKET/staging`                                                |
+| `SERVICE_ACCOUNT_EMAIL` | Dataflow worker service account                            | `pipeline-dev@orbitalsense-2026.iam.gserviceaccount.com`           |
+| `BQ_WRITE_METHOD`    | BigQuery write method (`STORAGE_WRITE_API` or `FILE_LOADS`)  | `STORAGE_WRITE_API`                                                  |
 
 ### Optional variables
 
@@ -90,13 +97,19 @@ export PROJECT_ID=orbitalsense-2026
 
 export INPUT_SUBSCRIPTION=projects/orbitalsense-2026/subscriptions/events-dev-subscription
 
-export DLQ_TOPIC=projects/orbitalsense-2026/topics/events-dev-dlq
+export DLQ_TOPIC=projects/orbitalsense-2026/topics/events-dead-letter-dev
 
-export BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.events
+export BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.telemetry
 
 export RAW_BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.telemetry_raw
 
 export PIPELINE_VERSION=1.0.0
+
+export REGION=europe-west2
+export TEMP_LOCATION=gs://BUCKET/temp
+export STAGING_LOCATION=gs://BUCKET/staging
+export SERVICE_ACCOUNT_EMAIL=pipeline-dev@orbitalsense-2026.iam.gserviceaccount.com
+export BQ_WRITE_METHOD=STORAGE_WRITE_API
 ```
 
 Verify the variables:
@@ -108,6 +121,11 @@ echo "$DLQ_TOPIC"
 echo "$BIGQUERY_TABLE"
 echo "$RAW_BIGQUERY_TABLE"
 echo "$PIPELINE_VERSION"
+echo "$REGION"
+echo "$TEMP_LOCATION"
+echo "$STAGING_LOCATION"
+echo "$SERVICE_ACCOUNT_EMAIL"
+echo "$BQ_WRITE_METHOD"
 ```
 
 ## Google Cloud Authentication
@@ -156,7 +174,7 @@ projects/orbitalsense-2026/subscriptions/events-dev-subscription
 The dead-letter topic is:
 
 ```text
-projects/orbitalsense-2026/topics/events-dev-dlq
+projects/orbitalsense-2026/topics/events-dead-letter-dev
 ```
 
 Verify the subscription:
@@ -192,7 +210,7 @@ orbitalsense-2026.analytics_dev.telemetry_raw
 Validated and deduplicated events are written to:
 
 ```text
-orbitalsense-2026.analytics_dev.events
+orbitalsense-2026.analytics_dev.telemetry
 ```
 
 The BigQuery dataset can be inspected with:
@@ -234,13 +252,19 @@ bq query --use_legacy_sql=false \
   --project_id="$PROJECT_ID" \
   '
   SELECT COUNT(*) AS row_count
-  FROM `orbitalsense-2026.analytics_dev.events`
+  FROM `orbitalsense-2026.analytics_dev.telemetry`
   '
 ```
 
 ## Running the Consumer Locally
 
 The consumer is an Apache Beam streaming pipeline.
+
+From the repository root, change into the application directory:
+
+```bash
+cd app
+```
 
 Activate the virtual environment:
 
@@ -255,9 +279,9 @@ export PROJECT_ID=orbitalsense-2026
 
 export INPUT_SUBSCRIPTION=projects/orbitalsense-2026/subscriptions/events-dev-subscription
 
-export DLQ_TOPIC=projects/orbitalsense-2026/topics/events-dev-dlq
+export DLQ_TOPIC=projects/orbitalsense-2026/topics/events-dead-letter-dev
 
-export BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.events
+export BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.telemetry
 
 export RAW_BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.telemetry_raw
 ```
@@ -294,7 +318,7 @@ python -m consumer.pipeline \
   --runner=DataflowRunner \
   --streaming \
   --project="$PROJECT_ID" \
-  --region=europe-west1 \
+  --region="$REGION" \
   --setup_file=./setup.py
 ```
 
@@ -305,7 +329,7 @@ The pipeline will:
 3. Parse and validate the telemetry.
 4. Send invalid events to the DLQ topic.
 5. Deduplicate valid events by `event_id`.
-6. Write curated events to `analytics_dev.events`.
+6. Write curated events to `analytics_dev.telemetry`.
 
 ### Dataflow job status
 
@@ -314,7 +338,7 @@ List Dataflow jobs:
 ```bash
 gcloud dataflow jobs list \
   --project="$PROJECT_ID" \
-  --region=europe-west1 \
+  --region="$REGION" \
   --limit=10 \
   --format="table(id,name,state,creationTime)"
 ```
@@ -324,7 +348,7 @@ List only currently running jobs:
 ```bash
 gcloud dataflow jobs list \
   --project="$PROJECT_ID" \
-  --region=europe-west1 \
+  --region="$REGION" \
   --filter="state=RUNNING" \
   --format="table(id,name,state,creationTime)"
 ```
@@ -334,7 +358,7 @@ Describe a job:
 ```bash
 gcloud dataflow jobs describe JOB_ID \
   --project="$PROJECT_ID" \
-  --region=europe-west1
+  --region="$REGION"
 ```
 
 Check Dataflow errors:
@@ -355,12 +379,12 @@ Replace `JOB_ID` with the actual Dataflow job ID.
 
 The Dataflow worker subnet must have Private Google Access enabled when required by the worker networking configuration.
 
-For the default `europe-west1` subnet:
+For the default `europe-west2` subnet:
 
 ```bash
 gcloud compute networks subnets update default \
   --project="$PROJECT_ID" \
-  --region=europe-west1 \
+  --region=europe-west2 \
   --enable-private-ip-google-access
 ```
 
@@ -369,7 +393,7 @@ Verify:
 ```bash
 gcloud compute networks subnets describe default \
   --project="$PROJECT_ID" \
-  --region=europe-west1 \
+  --region=europe-west2 \
   --format="yaml(name,region,privateIpGoogleAccess)"
 ```
 
@@ -392,14 +416,14 @@ the pipeline itself may be valid, but Dataflow cannot provision workers.
 For example:
 
 ```text
-The zone 'europe-west1-b' does not have enough resources available
+The zone 'europe-west2-b' does not have enough resources available
 to fulfill the request.
 ```
 
 or:
 
 ```text
-The zone 'europe-west1-c' does not have enough resources available
+The zone 'europe-west2-c' does not have enough resources available
 to fulfill the request.
 ```
 
@@ -410,7 +434,7 @@ Check the current Dataflow jobs:
 ```bash
 gcloud dataflow jobs list \
   --project="$PROJECT_ID" \
-  --region=europe-west1 \
+  --region="$REGION" \
   --limit=10 \
   --format="table(id,name,state,creationTime)"
 ```
@@ -427,21 +451,21 @@ The image is:
 europe-west1-docker.pkg.dev/orbitalsense-2026/containers-dev/telemetry-producer:latest
 ```
 
-The producer requires a Google Cloud service-account key when running outside the Google Cloud environment.
+The producer can use a Google Cloud service-account key when running outside
+the Google Cloud environment. Keep the key outside the repository and never
+commit it.
 
 The credentials file is mounted into the container as:
 
-```text
-/tmp/producer-key.json
-```
+`/credentials/producer-key.json`.
 
 Run the producer:
 
 ```bash
 docker run --rm \
-  --env-file producer/.env \
+  --env-file app/producer/.env \
   -e GOOGLE_APPLICATION_CREDENTIALS=/credentials/producer-key.json \
-  -v "$(pwd)/producer/producer-key.json:/credentials/producer-key.json:ro" \
+  -v "/path/to/producer-key.json:/credentials/producer-key.json:ro" \
   europe-west1-docker.pkg.dev/orbitalsense-2026/containers-dev/telemetry-producer:latest
 ```
 
@@ -471,7 +495,7 @@ If the path is a directory, Docker will mount the directory instead of the JSON 
 
 ```text
 IsADirectoryError: [Errno 21] Is a directory:
-'/tmp/producer-key.json'
+'/credentials/producer-key.json'
 ```
 
 ## End-to-End Flow
@@ -480,7 +504,7 @@ Start the consumer first:
 
 ```bash
 docker run --rm \
-  --env-file consumer/.env \
+  --env-file app/consumer/.env \
   -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/application_default_credentials.json \
   -v "$HOME/.config/gcloud/application_default_credentials.json:/tmp/application_default_credentials.json:ro" \
   europe-west1-docker.pkg.dev/orbitalsense-2026/containers-dev/telemetry-consumer:latest \
@@ -492,7 +516,7 @@ Confirm the Dataflow job is running:
 ```bash
 gcloud dataflow jobs list \
   --project="$PROJECT_ID" \
-  --region=europe-west1 \
+  --region="$REGION" \
   --limit=5 \
   --format="table(id,name,state,creationTime)"
 ```
@@ -504,8 +528,8 @@ docker run --rm \
   -e PYTHONUNBUFFERED=1 \
   -e PROJECT_ID=orbitalsense-2026 \
   -e PUBSUB_TOPIC=events-dev \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/producer-key.json \
-  -v /path/to/producer-key.json:/tmp/producer-key.json:ro \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/credentials/producer-key.json \
+  -v /path/to/producer-key.json:/credentials/producer-key.json:ro \
   europe-west1-docker.pkg.dev/orbitalsense-2026/containers-dev/telemetry-producer:latest
 ```
 
@@ -536,7 +560,7 @@ telemetry_raw          validation
                 dedupe          DLQ
                     |
                     v
-             analytics_dev.events
+             analytics_dev.telemetry
 ```
 
 ## Troubleshooting
@@ -581,7 +605,7 @@ DATASET.TABLE
 Correct:
 
 ```bash
-export BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.events
+export BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.telemetry
 
 export RAW_BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.telemetry_raw
 ```
@@ -589,7 +613,7 @@ export RAW_BIGQUERY_TABLE=orbitalsense-2026:analytics_dev.telemetry_raw
 Do not use a filesystem path such as:
 
 ```text
-/Users/.../orbitalsense-2026:analytics_dev.events
+/Users/.../orbitalsense-2026:analytics_dev.telemetry
 ```
 
 ### Raw table receives data but curated table remains empty
@@ -612,11 +636,11 @@ bq query --use_legacy_sql=false \
   --project_id="$PROJECT_ID" \
   '
   SELECT COUNT(*) AS row_count
-  FROM `orbitalsense-2026.analytics_dev.events`
+  FROM `orbitalsense-2026.analytics_dev.telemetry`
   '
 ```
 
-If `telemetry_raw` increases while `events` remains at zero, inspect the Dataflow worker logs for validation, serialization, deduplication, or BigQuery write errors.
+If `telemetry_raw` increases while `telemetry` remains at zero, inspect the Dataflow worker logs for validation, serialization, deduplication, or BigQuery write errors.
 
 ### Dataflow worker startup failures
 
@@ -649,7 +673,6 @@ orbitalsense-2026.analytics_dev
 Relevant tables:
 
 ```text
-analytics_dev.events
 analytics_dev.telemetry_raw
 analytics_dev.telemetry
 analytics_dev.telemetry_staging
@@ -659,8 +682,11 @@ The primary streaming pipeline destinations are:
 
 ```text
 analytics_dev.telemetry_raw
-analytics_dev.events
+analytics_dev.telemetry
 ```
+
+Additional BigQuery examples are available in
+[docs/analytics-queries.md](docs/analytics-queries.md).
 
 ## Pipeline Processing
 
@@ -676,7 +702,7 @@ Raw BigQuery Write
 JSON Parsing
       |
       v
-Event Validation
+Required Fields, Types, and Timestamp Validation
       |
       +------ invalid ------> DLQ
       |
