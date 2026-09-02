@@ -439,11 +439,9 @@ Run the producer:
 
 ```bash
 docker run --rm \
-  -e PYTHONUNBUFFERED=1 \
-  -e PROJECT_ID=orbitalsense-2026 \
-  -e PUBSUB_TOPIC=events-dev \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/producer-key.json \
-  -v /path/to/producer-key.json:/tmp/producer-key.json:ro \
+  --env-file producer/.env \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/credentials/producer-key.json \
+  -v "$(pwd)/producer/producer-key.json:/credentials/producer-key.json:ro" \
   europe-west1-docker.pkg.dev/orbitalsense-2026/containers-dev/telemetry-producer:latest
 ```
 
@@ -481,12 +479,12 @@ IsADirectoryError: [Errno 21] Is a directory:
 Start the consumer first:
 
 ```bash
-python -m consumer.pipeline \
-  --runner=DataflowRunner \
-  --streaming \
-  --project="$PROJECT_ID" \
-  --region=europe-west1 \
-  --setup_file=./setup.py
+docker run --rm \
+  --env-file consumer/.env \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/application_default_credentials.json \
+  -v "$HOME/.config/gcloud/application_default_credentials.json:/tmp/application_default_credentials.json:ro" \
+  europe-west1-docker.pkg.dev/orbitalsense-2026/containers-dev/telemetry-consumer:latest \
+  python -m consumer.pipeline
 ```
 
 Confirm the Dataflow job is running:
